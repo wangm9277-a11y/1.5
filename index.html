@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>1.5 Second Math</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="importmap">
+{
+  "imports": {
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0",
+    "react-dom/client": "https://aistudiocdn.com/react-dom@^19.2.0/client",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.554.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/"
+  }
+}
+</script>
+    <!-- Babel for in-browser JSX transformation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+      /* Custom utility for no-select to prevent highlighting during rapid clicking */
+      .select-none {
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        user-select: none;
+      }
+    </style>
+  </head>
+  <body class="bg-slate-900 text-white select-none overflow-hidden font-sans">
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+      import React, { useState, useEffect, useRef, useCallback } from 'react';
+      import ReactDOM from 'react-dom/client';
+      import { Zap, Timer, Trophy, Heart, Play, ShieldPlus, RotateCcw, Home } from 'lucide-react';
+      import { GoogleGenAI } from '@google/genai';
+
+      // --- Types & Constants ---
+      const GameState = {
+        MENU: 'MENU',
+        PLAYING: 'PLAYING',
+        BLESSING: 'BLESSING',
+        GAME_OVER: 'GAME_OVER'
+      };
+
+      // Polyfill for process.env if running locally without bundler injection
+      if (typeof process === 'undefined') {
+        window.process = { env: { API_KEY: '' } };
+      }
+
+      // --- Services ---
+
+      // 1. Audio Service
+      class AudioService {
+        constructor() {
+          this.ctx = null;
+        }
+
+        getContext() {
+          if (!this.ctx) {
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            if (AudioContextClass) {
+              this.ctx = new AudioContextClass();
+            }
+          }
+          return this.ctx;
+        }
+
+        playPop() {
+          const ctx = this.getContext();
+          if (!ctx) return;
+          
+          if (ctx.state === 'suspended') {
+            ctx.resume().catch(() => {});
+          }
+
+          const t = ctx.currentTime;
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(400, t);
+          osc.frequency.linearRampToValueAtTime(800, t + 0.1);
+
+          gain.gain.setValueAtTime(0.2, t);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+
+          osc.start(t);
+          osc.stop(t + 0.15);
+        }
+      }
+      const audio = new AudioService();
+
+      // 2. Math Utils
+      const randomInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+
+      const generateQuestion = () => {
+        const type = randomInt(0, 3); // 0: +, 1: -, 2: *, 3: /
+        let text = '';
+        let answer = 0;
+        let wrong = 0;
+        const LIMIT = 20;
+
+        switch (type) {
+          case 0: // Addition
+            {
+              const a = randomInt(1, LIMIT - 1);
+              const b = randomInt(1, LIMIT - a);
+              text = `${a} + ${b}`;
+              answer = a + b;
+              break;
+            }
+          case 1: // Subtraction
+            {
+              const a = randomInt(2, LIMIT);
+              const b = randomInt(1, a - 1);
+              text = `${a} - ${b}`;
+              answer = a - b;
+              break;
+            }
+          case 2: // Multiplication
+            {
+              const a = randomInt(2, 10);
+              const maxB = Math.floor(LIMIT / a);
+              const b = randomInt(2, maxB);
+              text = `${a} × ${b}`;
+              answer = a * b;
+              break;
+            }
+          case 3: // Division
+            {
+              const b = randomInt(2, 10);
+              const maxAns = Math.floor(LIMIT / b);
+              answer = randomInt(2, maxAns);
+              const a = answer * b;
+              text = `${a} ÷ ${b}`;
+              break;
+            }
+        }
+
+        let validWrong = false;
+        while (!validWrong) {
+          const offset = randomInt(1, 5) * (Math.random() > 0.5 ? 1 : -1);
+          wrong = answer + offset;
+          if (wrong >= 0 && wrong <= LIMIT && wrong !== answer) {
+            validWrong = true;
+          }
+        }
+
+        return { text, correctAnswer: answer, wrongAnswer: wrong };
+      };
+
+      // 3. Gemini Service
+      const getBrotherMengBlessing = async () => {
+        const API_KEY = process.env.API_KEY;
+        if (!API_KEY) {
+          return "猛哥说：API Key 没填，但我还是祝你这次能行！复活吧！";
+        }
+
+        try {
+          const ai = new GoogleGenAI({ apiKey: API_KEY });
+          const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: "Write a short, funny, very energetic and encouraging message (maximum 20 words) from a character named '猛哥' (Brother Meng) to a player who just lost a speed math game. The message should sound like a tough love blessing to let them revive once. Language: Chinese (Simplified).",
+          });
+          return response.text || "猛哥说：这点算术都算不对？起来重算！";
+        } catch (error) {
+          console.error("Failed to get blessing:", error);
+          return "猛哥说：网络不太好，但我的祝福依然在！复活吧！";
+        }
+      };
+
+      // --- Components ---
+
+      // Menu Component
+      const Menu = ({ onStart }) => {
+        const [blessing, setBlessing] = useState(false);
+        const [masterMode, setMasterMode] = useState(false);
+
+        return (
+          <div className="flex flex-col items-center justify-center h-screen bg-slate-900 p-4 space-y-12">
+            <div className="text-center space-y-4">
+              <div className="flex justify-center mb-4">
+                <Zap size={64} className="text-yellow-400 animate-pulse" />
+              </div>
+              <h1 className="text-5xl md:text-7xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-orange-500 tracking-tighter">
+                1.5 SECOND MATH
+              </h1>
+            </div>
+
+            <div className="bg-slate-800 p-6 rounded-2xl border border-slate-700 w-full max-w-md shadow-xl space-y-6">
+              <label className="flex items-center space-x-4 cursor-pointer group">
+                <div className="relative">
+                  <input
+                    type="checkbox"
+                    className="peer sr-only"
+                    checked={blessing}
+                    onChange={(e) => {
+                      audio.playPop();
+                      setBlessing(e.target.checked);
+                    }}
+                  />
+                  <div className="w-14 h-8 bg-slate-600 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-7 after:w-7 after:transition-all peer-checked:bg-green-500"></div>
+                </div>
+                <span className={`text-xl font-bold transition-colors ${blessing ? 'text-green-400' : 'text-slate-400'}`}>
+                  猛哥的祝福
+                </span>
+              </label>
+
+              <label className="flex items-center space-x-4 cursor-pointer group">
+                <div className="relative">
+                  <input
+                    type="checkbox"
+                    className="peer sr-only"
+                    checked={masterMode}
+                    onChange={(e) => {
+                      audio.playPop();
+                      setMasterMode(e.target.checked);
+                    }}
+                  />
+                  <div className="w-14 h-8 bg-slate-600 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-7 after:w-7 after:transition-all peer-checked:bg-red-600"></div>
+                </div>
+                <span className={`text-xl font-bold transition-colors ${masterMode ? 'text-red-500' : 'text-slate-400'}`}>
+                  大师模式
+                </span>
+              </label>
+            </div>
+
+            <button
+              onClick={() => {
+                audio.playPop();
+                onStart(blessing, masterMode);
+              }}
+              className="px-12 py-6 bg-white text-slate-900 text-2xl font-black rounded-full 
+                         shadow-[0_10px_0_rgb(203,213,225)] hover:shadow-[0_12px_0_rgb(203,213,225)]
+                         active:shadow-none active:translate-y-[10px] 
+                         transition-all duration-100 ease-in-out hover:-translate-y-1"
+            >
+              START GAME
+            </button>
+          </div>
+        );
+      };
+
+      // Game Component
+      const Game = ({ onGameOver, onReviveNeeded, isReviving = false, isMasterMode = false, currentScore = 0 }) => {
+        const [question, setQuestion] = useState(null);
+        const [score, setScore] = useState(currentScore);
+        const [timerDisplay, setTimerDisplay] = useState(isMasterMode ? "1.000" : "1.500");
+        
+        const startTimeRef = useRef(0);
+        const animationFrameRef = useRef(0);
+        const isRunningRef = useRef(false);
+        const isFirstQuestionRef = useRef(true);
+        const [isCorrectLeft, setIsCorrectLeft] = useState(true);
+
+        const failGame = useCallback(() => {
+          isRunningRef.current = false;
+          if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+          
+          if (isReviving) {
+              onGameOver(score);
+          } else {
+              onReviveNeeded(score);
+          }
+        }, [score, onGameOver, onReviveNeeded, isReviving]);
+
+        const nextQuestion = useCallback(() => {
+          const q = generateQuestion();
+          setQuestion(q);
+          setIsCorrectLeft(Math.random() > 0.5);
+          
+          // Duration logic: Master Mode = 1000ms, Normal = 1500ms
+          let duration = isMasterMode ? 1000 : 1500;
+          
+          // Extra time for first question after revive
+          if (isReviving && isFirstQuestionRef.current) {
+            duration += 500;
+          }
+          
+          startTimeRef.current = performance.now();
+          isRunningRef.current = true;
+          isFirstQuestionRef.current = false;
+          
+          const loop = () => {
+            if (!isRunningRef.current) return;
+            
+            const now = performance.now();
+            const elapsed = now - startTimeRef.current;
+            const remaining = duration - elapsed;
+
+            if (remaining <= 0) {
+              setTimerDisplay("0.000");
+              failGame();
+              return;
+            }
+
+            setTimerDisplay((remaining / 1000).toFixed(3));
+            animationFrameRef.current = requestAnimationFrame(loop);
+          };
+          
+          if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+          animationFrameRef.current = requestAnimationFrame(loop);
+        }, [failGame, isReviving, isMasterMode]);
+
+        useEffect(() => {
+          nextQuestion();
+          return () => {
+            if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+            isRunningRef.current = false;
+          };
+        }, [nextQuestion]);
+
+        const handleAnswer = (selectedVal) => {
+          audio.playPop();
+          if (!question || !isRunningRef.current) return;
+
+          if (selectedVal === question.correctAnswer) {
+            setScore(s => s + 1);
+            nextQuestion();
+          } else {
+            failGame();
+          }
+        };
+
+        if (!question) return <div className="h-screen bg-slate-900" />;
+
+        const leftAnswer = isCorrectLeft ? question.correctAnswer : question.wrongAnswer;
+        const rightAnswer = isCorrectLeft ? question.wrongAnswer : question.correctAnswer;
+
+        return (
+          <div className="h-screen flex flex-col bg-slate-900 relative">
+            <div className="flex justify-between items-start p-6 absolute top-0 left-0 right-0 w-full z-10">
+              <div className="flex flex-col">
+                <div className="flex items-center space-x-2 text-red-500 animate-pulse">
+                  <Timer size={32} />
+                  <span className="text-4xl font-mono font-bold tracking-widest">{timerDisplay}</span>
+                </div>
+                <span className="text-xs text-red-400 uppercase font-bold tracking-wider ml-1">seconds</span>
+              </div>
+
+              <div className="flex flex-col items-end">
+                 <div className="flex items-center space-x-2 text-yellow-400">
+                  <span className="text-5xl font-black">{score}</span>
+                  <Trophy size={32} />
+                 </div>
+                 {isMasterMode && (
+                   <span className="text-xs text-red-500 font-bold uppercase tracking-widest animate-pulse">Master Mode</span>
+                 )}
+                 <span className="text-xs text-yellow-600 uppercase font-bold tracking-wider mr-1">Score</span>
+              </div>
+            </div>
+
+            <div className="flex-1 flex items-center justify-center p-4">
+              <h1 className="text-[5rem] sm:text-[8rem] md:text-[10rem] lg:text-[12rem] font-black text-white drop-shadow-[0_10px_10px_rgba(0,0,0,0.5)] whitespace-nowrap overflow-visible">
+                {question.text}
+              </h1>
+            </div>
+
+            <div className="h-1/3 flex gap-4 px-6 pb-8">
+              <button
+                onPointerDown={() => handleAnswer(leftAnswer)}
+                className="flex-1 bg-slate-800 text-blue-400 text-6xl md:text-8xl font-black rounded-3xl 
+                           shadow-[0_12px_0_rgb(15,23,42)] active:shadow-none active:translate-y-[12px] 
+                           transition-all duration-75 ease-in-out border-2 border-slate-700
+                           hover:bg-slate-750 flex items-center justify-center"
+              >
+                {leftAnswer}
+              </button>
+              <button
+                onPointerDown={() => handleAnswer(rightAnswer)}
+                className="flex-1 bg-slate-800 text-pink-400 text-6xl md:text-8xl font-black rounded-3xl 
+                           shadow-[0_12px_0_rgb(15,23,42)] active:shadow-none active:translate-y-[12px] 
+                           transition-all duration-75 ease-in-out border-2 border-slate-700
+                           hover:bg-slate-750 flex items-center justify-center"
+              >
+                {rightAnswer}
+              </button>
+            </div>
+          </div>
+        );
+      };
+
+      // Blessing Modal Component
+      const BlessingModal = ({ onRevive }) => {
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/95 backdrop-blur-sm p-4">
+            <div className="bg-gradient-to-b from-indigo-900 to-slate-900 border border-indigo-500/30 p-8 rounded-3xl max-w-lg w-full shadow-[0_0_50px_rgba(79,70,229,0.3)] text-center space-y-8 animate-in fade-in zoom-in duration-300">
+              
+              <div className="flex justify-center">
+                <div className="relative">
+                  <div className="absolute inset-0 bg-red-500 blur-2xl opacity-50 rounded-full animate-pulse"></div>
+                  <Heart size={80} className="text-red-500 relative z-10 fill-red-500" />
+                </div>
+              </div>
+
+              <div>
+                  <h2 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-orange-500 mb-4">
+                    猛哥的祝福生效!
+                  </h2>
+                  <p className="text-indigo-200 text-lg">
+                    获得一次原地复活机会。
+                  </p>
+                  <p className="text-indigo-300 text-sm mt-2">
+                    (复活后的第一题时间延长至2秒)
+                  </p>
+              </div>
+
+              <button
+                onClick={() => {
+                  audio.playPop();
+                  onRevive();
+                }}
+                className="w-full py-6 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-400 hover:to-emerald-500 text-white text-2xl font-black rounded-xl flex items-center justify-center space-x-3 transition-all transform hover:scale-105 active:scale-95 shadow-lg shadow-green-900/50"
+              >
+                <ShieldPlus size={32} />
+                <span>立刻复活 (REVIVE)</span>
+              </button>
+            </div>
+          </div>
+        );
+      };
+
+      // Game Over Component
+      const GameOver = ({ score, onRestart, onHome, isMasterMode }) => {
+        return (
+          <div className="h-screen flex flex-col items-center justify-center bg-slate-900 space-y-12 p-4">
+            <h1 className="text-6xl md:text-8xl font-black text-slate-700 uppercase tracking-tighter">
+              Game Over
+            </h1>
+            
+            <div className="text-center flex flex-col items-center">
+              {isMasterMode && (
+                <div className="px-6 py-2 bg-red-600 text-white font-black rounded-full text-lg uppercase tracking-widest mb-4 shadow-lg animate-bounce border-2 border-red-400">
+                  大师模式
+                </div>
+              )}
+              <p className="text-slate-400 text-xl uppercase tracking-widest mb-2">Final Score</p>
+              <div className="text-8xl md:text-9xl font-black text-transparent bg-clip-text bg-gradient-to-b from-white to-slate-500">
+                {score}
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-4 w-full max-w-md">
+              <button
+                onClick={() => {
+                  audio.playPop();
+                  onRestart();
+                }}
+                className="flex-1 flex items-center justify-center space-x-3 px-8 py-4 bg-white text-slate-900 rounded-xl font-bold text-xl hover:bg-slate-200 transition-transform active:scale-95"
+              >
+                <RotateCcw />
+                <span>Try Again</span>
+              </button>
+              <button
+                onClick={() => {
+                   audio.playPop();
+                   onHome();
+                }}
+                className="flex-1 flex items-center justify-center space-x-3 px-8 py-4 bg-slate-800 text-white rounded-xl font-bold text-xl hover:bg-slate-700 transition-transform active:scale-95"
+              >
+                <Home />
+                <span>Menu</span>
+              </button>
+            </div>
+          </div>
+        );
+      };
+
+      // --- Main App ---
+      const App = () => {
+        const [gameState, setGameState] = useState(GameState.MENU);
+        const [hasBlessing, setHasBlessing] = useState(false);
+        const [isMasterMode, setIsMasterMode] = useState(false);
+        const [usedBlessing, setUsedBlessing] = useState(false);
+        const [score, setScore] = useState(0);
+
+        const handleStart = (blessingSelected, masterModeSelected) => {
+          setHasBlessing(blessingSelected);
+          setIsMasterMode(masterModeSelected);
+          setUsedBlessing(false);
+          setScore(0);
+          setGameState(GameState.PLAYING);
+        };
+
+        const handleGameOver = (finalScore) => {
+          setScore(finalScore);
+          setGameState(GameState.GAME_OVER);
+        };
+
+        const handleReviveNeeded = (currentScore) => {
+          setScore(currentScore);
+          if (hasBlessing && !usedBlessing) {
+            setGameState(GameState.BLESSING);
+          } else {
+            handleGameOver(currentScore);
+          }
+        };
+
+        const handleRevive = () => {
+          setUsedBlessing(true);
+          setGameState(GameState.PLAYING);
+        };
+
+        const handleGoHome = () => {
+          setGameState(GameState.MENU);
+        };
+
+        return (
+          <div className="min-h-screen w-full font-sans">
+            {gameState === GameState.MENU && (
+              <Menu onStart={handleStart} />
+            )}
+            
+            {gameState === GameState.PLAYING && (
+              <Game 
+                onGameOver={handleGameOver} 
+                onReviveNeeded={handleReviveNeeded}
+                isReviving={usedBlessing}
+                isMasterMode={isMasterMode}
+                currentScore={score}
+              />
+            )}
+
+            {gameState === GameState.BLESSING && (
+              <BlessingModal onRevive={handleRevive} />
+            )}
+
+            {gameState === GameState.GAME_OVER && (
+              <GameOver 
+                score={score} 
+                isMasterMode={isMasterMode}
+                onRestart={() => handleStart(hasBlessing, isMasterMode)} 
+                onHome={handleGoHome} 
+              />
+            )}
+          </div>
+        );
+      };
+
+      // --- Render ---
+      const rootElement = document.getElementById('root');
+      if (rootElement) {
+        const root = ReactDOM.createRoot(rootElement);
+        root.render(
+          <React.StrictMode>
+            <App />
+          </React.StrictMode>
+        );
+      }
+    </script>
+  </body>
+</html>
